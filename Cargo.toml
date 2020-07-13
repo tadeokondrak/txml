@@ -1,0 +1,11 @@
+[package]
+name = "txml"
+version = "0.1.0" # remember to update html_root_url
+authors = ["Tadeo Kondrak <me@tadeo.ca>"]
+edition = "2018"
+description = "Small no_std non-conforming XML parser"
+readme = "README.md"
+repository = "https://github.com/tadeokondrak/txml"
+license = "MIT OR Apache-2.0"
+keywords = ["xml"]
+categories = ["encoding", "no-std", "parser-implementations"]
