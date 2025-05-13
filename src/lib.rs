@@ -25,6 +25,8 @@ pub enum Event<'a> {
     /// A closing tag of an XML element.
     /// This is also emitted after self-closing tags.
     Close(&'a str),
+    /// A doctype declaration.
+    Doctype(&'a str, &'a str),
     /// A processing instruction.
     Pi(&'a str),
     /// A comment.
@@ -218,6 +220,20 @@ impl<'a> Iterator for Parser<'a> {
             Some(Event::Close(tag))
         } else if self.consume("<?") {
             Some(Event::Pi(self.consume_to("?>")?))
+        } else if self.consume("<!DOCTYPE") {
+            let i = self.doc.find(&['[', '>'])?;
+            if self.doc[i..].starts_with("[") {
+                let name = self.doc[..i].trim_matches(WHITESPACE);
+                self.doc = &self.doc[i + 1..];
+                let body = self.consume_to("]")?.trim_matches(WHITESPACE);
+                let _ws = self.consume_to(">")?;
+                Some(Event::Doctype(name, body))
+            } else {
+                Some(Event::Doctype(
+                    self.consume_to(">")?.trim_matches(WHITESPACE),
+                    "",
+                ))
+            }
         } else if self.consume("<!--") {
             Some(Event::Comment(self.consume_to("-->")?))
         } else if self.consume("<![CDATA[") {
