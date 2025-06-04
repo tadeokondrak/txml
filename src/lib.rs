@@ -15,7 +15,6 @@ use core::convert::TryInto;
 use core::fmt::{self, Debug, Display, Write};
 
 const WHITESPACE: &[char] = &[' ', '\t', '\r', '\n'];
-const WHITESPACE_AND_EQ: &[char] = &[' ', '\t', '\r', '\n', '='];
 const WHITESPACE_AND_RANGLE_AND_SLASH: &[char] = &[' ', '\t', '\r', '\n', '>', '/'];
 
 /// An XML event.
@@ -66,7 +65,7 @@ impl<'a> Iterator for Attrs<'a> {
         let eq = self.text.find('=')?;
         let (start, rest) = self.text.split_at(eq);
         let start = start.trim_matches(WHITESPACE);
-        let rest = rest.trim_start_matches(WHITESPACE_AND_EQ);
+        let rest = rest[1..].trim_start_matches(WHITESPACE);
         let mut it = rest.char_indices();
         let quote = it.next()?.1;
         if quote != '\'' && quote != '"' {
