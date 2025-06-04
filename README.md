@@ -1,10 +1,20 @@
 # txml
 
-A no_std non-conforming, non-validating, non-streaming, zero-dependency,
-and zero-allocation XML parser in about 200 lines of safe Rust.
+An XML parser. It's about ~200 SLOC but it:
 
-It handles most sane XML files including those with ampersand escapes.
-It has no error information other than returning None.
+- Doesn't parse DTDs and therefore doesn't support custom entities
+- Doesn't validate DTDs, of course
+- Doesn't allow for streaming - you have to read the whole file at once
+- Doesn't reject all non-well-formed documents
+- Doesn't have any dependencies
+- Doesn't allocate, which is nice
+
+This parser is not meant for any usecase where you're not certain that
+the document is well-formed, because it reports errors by simply ending
+the event stream early.
+
+This parser may be useful for parsing machine-readable specifications that
+use XML such as Wayland and Vulkan.
 
 ## License
 
