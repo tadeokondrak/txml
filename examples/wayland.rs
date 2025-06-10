@@ -109,7 +109,7 @@ pub struct ParseContext<'a> {
 
 impl<'a> ParseContext<'a> {
     pub fn next(&mut self) -> Option<Event<'a>> {
-        Some(self.parser.next()?)
+        Some(self.parser.next()?.unwrap())
     }
 
     pub fn attr<T>(&self, name: &str) -> Option<T>
@@ -118,10 +118,12 @@ impl<'a> ParseContext<'a> {
     {
         self.attrs
             .clone()?
+            .map(|r| r.unwrap())
             .filter(|&(k, _)| k == name)
             .map(|(_, v)| v)
             .next()?
-            .collect::<String>()
+            .collect::<Result<String, txml::Error>>()
+            .ok()?
             .parse::<T>()
             .ok()
     }
@@ -164,7 +166,7 @@ impl<'a> ParseContext<'a> {
         let mut body = String::new();
         Some(loop {
             match self.next()? {
-                Event::Text(text) => body.extend(text),
+                Event::Text(text) => body.extend(text.map(|c| c.unwrap())),
                 Event::Close(name) if name == "copyright" => break body,
                 Event::Open(..) | Event::Close(..) => return None,
                 Event::Comment(..) | Event::Pi(..) | Event::Doctype(..) => {}
@@ -298,7 +300,7 @@ impl<'a> ParseContext<'a> {
         description.summary = self.attr("summary")?;
         Some(loop {
             match self.next()? {
-                Event::Text(text) => description.body.extend(text),
+                Event::Text(text) => description.body.extend(text.map(|c| c.unwrap())),
                 Event::Close(name) if name == "description" => break description,
                 Event::Open(..) | Event::Close(..) => return None,
                 Event::Comment(..) | Event::Pi(..) | Event::Doctype(..) => {}
