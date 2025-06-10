@@ -19,7 +19,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
-#![doc(html_root_url = "https://docs.rs/txml/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/txml/0.2.0")]
 
 use core::convert::TryInto;
 use core::fmt::{self, Debug, Display, Write};
