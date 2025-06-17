@@ -3,30 +3,37 @@
 //! An XML parser. It's small, but it:
 //!
 //! - Doesn't parse or validate DTDs
-//! - Doesn't support custom entities
+//! - Doesn't expand custom entities
+//! - Doesn't provide position information for errors.
 //! - Requires the full document to be loaded in memory
 //! - Accepts some non-well-formed documents
-//! - Fails to parse some rare well-formed documents
 //! - Supports XML built-in entities like &amp;
 //! - Doesn't have any dependencies
 //! - Doesn't allocate
 //!
-//! This parser is not meant for usecases where you'd like good error messages
-//! or perfect XML compliance. It's best used when communicating with a known
+//! This parser is not good for usecases where you need good error messages or
+//! complex XML features. It's best used when communicating with a known
 //! system, or when parsing existing, known documents written by hand.
 //!
-//! An example of a well-formed XML document that won't parse with txml:
+//! txml doesn't check for certain constructs that you may want to check for
+//! at a higher level. These include:
 //!
-//! ```xml
-//! <!DOCTYPE root [<!ENTITY e "]">]>
-//! <root>&e;</root>
-//! ```
+//! - Attribute names: TODO name characters and repeated names
+//! - Tag names: txml doesn't verify that tag names match
+//! `[a-zA-Z_:][-a-zA-Z0-9_:.]*`. You can do this yourself, if necessary.
+//! - Entities: [`Text`]'s expansion will fail if custom entities are present.
+//! You can reimplement expansion of [`Text`] if you need custom entities.
+//! - DTDs: [`Event::Doctype`] does not parse the contents of the inline subset.
+//!The contents are provided in case you want to parse themyourself.
+//! - Namespaces: txml doesn't understand namespaces, but that doesn't preclude
+//! implementing namespace awareness on top.
+//! - Comments: XML doesn't allow `--` in comments. You can check this yourself.
+//! - Text: XML doesn't allow `]]>` in text content (not attributes).
+//! You can check this yourself.
+//! - Invalid nesting: TODO
 //!
-//! An example of a non-well-formed XML document that will parse with txml:
-//!
-//! ```xml
-//! <0root>&e;</0root>
-//! ```
+//! Also note that txml requires you to actually process text data if you want to see all errors within it.
+//! TODO
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -36,11 +43,9 @@
 #[cfg(test)]
 mod tests;
 
-use core::convert::TryInto;
-use core::fmt::{self, Debug, Display, Write};
+use core::convert::TryInto as _;
 
 const WHITESPACE: &[char] = &[' ', '\t', '\r', '\n'];
-const WHITESPACE_AND_RANGLE_AND_SLASH: &[char] = &[' ', '\t', '\r', '\n', '>', '/'];
 
 /// An XML event.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -93,7 +98,15 @@ pub struct Attrs<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Error(pub &'static str);
 
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
 impl Error {
+    /// invalid attribute ame
+    pub const ATTR_INVALID_NAME: Error = Error("invalid attribute name");
     /// '=' character not found in attribute
     pub const ATTR_MISSING_EQ: Error = Error("'=' character not found in attribute");
     /// quote character not found in attribute
@@ -151,7 +164,7 @@ impl<'a> Iterator for Attrs<'a> {
         }
         let Some(eq) = self.text.find('=') else {
             self.text = "";
-            return Some(Err(Error::ATTR_MISSING_EQ));
+            return Some(Err(Error::ATTR_INVALID_NAME));
         };
         let (start, rest) = self.text.split_at(eq);
         let start = start.trim_matches(WHITESPACE);
@@ -176,6 +189,9 @@ impl<'a> Iterator for Attrs<'a> {
             }
         };
         self.text = it.as_str();
+        if start == "" {
+            return Some(Err(Error::ATTR_INVALID_NAME));
+        }
         Some(Ok((start, Text::Escaped(&rest[1..val_end]))))
     }
 }
@@ -183,25 +199,18 @@ impl<'a> Iterator for Attrs<'a> {
 /// A string that can contain XML entity references.
 ///
 /// This type is an iterator of characters.
-/// To convert to a string, use the Display impl.
-/// To compare equality, use the PartialEq\<str\> impl.
+///
+/// To compare equality to a string, use the [`PartialEq<str>`] or
+/// [`PartialEq<&str>`] impl.
+///
+/// To convert to a string, use
+/// [`Iterator::collect::<Result<String, txml::Error>>`].
 #[derive(Clone, Eq, Debug)]
 pub enum Text<'a> {
     /// Text interpreted as-is, without any replacements.
     Verbatim(&'a str),
     /// Text interpreted with XML entity references.
     Escaped(&'a str),
-}
-
-impl<'a> Display for Text<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            Text::Verbatim(s) => f.write_str(s),
-            Text::Escaped(s) => Text::Escaped(s)
-                .map(|c| f.write_char(c.unwrap_or('�')))
-                .collect(),
-        }
-    }
 }
 
 impl<'a> Iterator for Text<'a> {
@@ -262,7 +271,7 @@ impl<'a> Iterator for Text<'a> {
 }
 
 impl<'a> PartialEq for Text<'a> {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, other: &Text<'a>) -> bool {
         self.clone().eq(other.clone())
     }
 }
@@ -287,7 +296,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Creates a new parser.
-    pub fn new(doc: &'a str) -> Self {
+    pub fn new(doc: &'a str) -> Parser<'a> {
         Parser {
             doc,
             self_closing: None,
@@ -309,104 +318,125 @@ impl<'a> Parser<'a> {
         self.doc = &self.doc[i + pattern.len()..];
         Some(ret)
     }
+
+    // returns err on unclosed quote
+    fn consume_to_char_ignoring_quoted_sections(
+        &mut self,
+        to_chars: &[char],
+    ) -> Result<Option<(char, &'a str)>, Error> {
+        let mut it = self.doc.char_indices();
+        while let Some((i, c)) = it.next() {
+            for &to_c in to_chars {
+                if c == to_c {
+                    let ret = &self.doc[0..i];
+                    self.doc = &self.doc[i + to_c.len_utf8()..];
+                    return Ok(Some((c, ret)));
+                }
+            }
+            if c == '"' || c == '\'' {
+                loop {
+                    if let Some((_, inner_c)) = it.next() {
+                        if inner_c == c {
+                            break;
+                        }
+                    } else {
+                        return Err(Error::ATTR_MISSING_END_QUOTE);
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn next_inner(&mut self) -> Result<Option<Event<'a>>, Error> {
+        let ev = if let Some(tag) = self.self_closing.take() {
+            Event::Close(tag)
+        } else if self.consume("<?") {
+            Event::Pi(self.consume_to("?>").ok_or(Error::UNTERMINATED_PI)?)
+        } else if self.consume("<!DOCTYPE") {
+            let (c, name) = self
+                .consume_to_char_ignoring_quoted_sections(&['[', '>'])?
+                .ok_or(Error::UNTERMINATED_DOCTYPE)?;
+            if c == '[' {
+                let (_, body) = self
+                    .consume_to_char_ignoring_quoted_sections(&[']'])?
+                    .ok_or(Error::UNTERMINATED_DOCTYPE_SUBSET)?;
+                let body = body.trim_matches(WHITESPACE);
+                let _ws = self.consume_to(">").ok_or(Error::UNTERMINATED_DOCTYPE)?;
+                Event::Doctype(name.trim_matches(WHITESPACE), body)
+            } else {
+                Event::Doctype(name.trim_matches(WHITESPACE), "")
+            }
+        } else if self.consume("<!--") {
+            Event::Comment(self.consume_to("-->").ok_or(Error::UNTERMINATED_COMMENT)?)
+        } else if self.consume("<![CDATA[") {
+            Event::Text(Text::Verbatim(
+                self.consume_to("]]>").ok_or(Error::UNTERMINATED_CDATA)?,
+            ))
+        } else if self.consume("</") {
+            let tag = self
+                .consume_to(">")
+                .ok_or(Error::UNTERMINATED_CLOSING_TAG)?
+                .trim_matches(WHITESPACE);
+            if tag == "" {
+                return Err(Error::INVALID_TAG_NAME);
+            }
+            Event::Close(tag)
+        } else if self.consume("<") {
+            let (_, content) = self
+                .consume_to_char_ignoring_quoted_sections(&['>'])?
+                .ok_or(Error::UNTERMINATED_TAG)?;
+            let (mut tag, rest) = content.split_once(WHITESPACE).unwrap_or((content, ""));
+            if tag == "" {
+                return Err(Error::INVALID_TAG_NAME);
+            }
+            let mut attrs = rest.trim_matches(WHITESPACE);
+            if tag.ends_with('/') {
+                tag = tag[..tag.len() - 1].trim_end_matches(WHITESPACE);
+                self.self_closing = Some(tag);
+                if attrs != "" {
+                    return Err(Error::INVALID_TAG_NAME);
+                }
+            } else if attrs.ends_with('/') {
+                self.self_closing = Some(tag);
+                attrs = attrs[..attrs.len() - 1].trim_end_matches(WHITESPACE);
+            }
+            Event::Open(tag, Attrs { text: attrs })
+        } else if self.doc.starts_with("&") {
+            if let Some(i) = self.doc.find(';') {
+                let ret = &self.doc[..=i];
+                self.doc = &self.doc[i + 1..];
+                Event::Text(Text::Escaped(ret))
+            } else {
+                let i = self.doc.find('<').unwrap_or_else(|| self.doc.len());
+                let ret = &self.doc[..i];
+                self.doc = &self.doc[i..];
+                Event::Text(Text::Escaped(ret))
+            }
+        } else if !self.doc.is_empty() {
+            let i = self.doc.find(['<', '&']).unwrap_or_else(|| self.doc.len());
+            let ret = &self.doc[..i];
+            self.doc = &self.doc[i..];
+            Event::Text(Text::Verbatim(ret))
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(ev))
+    }
 }
 
 impl<'a> Iterator for Parser<'a> {
     type Item = Result<Event<'a>, Error>;
 
     fn next(&mut self) -> Option<Result<Event<'a>, Error>> {
-        if let Some(tag) = self.self_closing.take() {
-            Some(Ok(Event::Close(tag)))
-        } else if self.consume("<?") {
-            let Some(text) = self.consume_to("?>") else {
+        match self.next_inner() {
+            Ok(Some(ev)) => Some(Ok(ev)),
+            Ok(None) => None,
+            Err(e) => {
                 self.doc = "";
-                return Some(Err(Error::UNTERMINATED_PI));
-            };
-            Some(Ok(Event::Pi(text)))
-        } else if self.consume("<!DOCTYPE") {
-            let Some(i) = self.doc.find(&['[', '>']) else {
-                self.doc = "";
-                return Some(Err(Error::UNTERMINATED_DOCTYPE));
-            };
-            if self.doc[i..].starts_with("[") {
-                let name = self.doc[..i].trim_matches(WHITESPACE);
-                self.doc = &self.doc[i + 1..];
-                let Some(body) = self.consume_to("]") else {
-                    self.doc = "";
-                    return Some(Err(Error::UNTERMINATED_DOCTYPE_SUBSET));
-                };
-                let body = body.trim_matches(WHITESPACE);
-                let Some(_ws) = self.consume_to(">") else {
-                    self.doc = "";
-                    return Some(Err(Error::UNTERMINATED_DOCTYPE));
-                };
-                Some(Ok(Event::Doctype(name, body)))
-            } else {
-                Some(Ok(Event::Doctype(
-                    self.consume_to(">")
-                        .unwrap_or_else(|| unreachable!())
-                        .trim_matches(WHITESPACE),
-                    "",
-                )))
+                self.self_closing = None;
+                Some(Err(e))
             }
-        } else if self.consume("<!--") {
-            let Some(text) = self.consume_to("-->") else {
-                self.doc = "";
-                return Some(Err(Error::UNTERMINATED_COMMENT));
-            };
-            Some(Ok(Event::Comment(text)))
-        } else if self.consume("<![CDATA[") {
-            let Some(text) = self.consume_to("]]>") else {
-                self.doc = "";
-                return Some(Err(Error::UNTERMINATED_CDATA));
-            };
-            Some(Ok(Event::Text(Text::Verbatim(text))))
-        } else if self.consume("</") {
-            let Some(tag_name) = self.consume_to(">") else {
-                self.doc = "";
-                return Some(Err(Error::UNTERMINATED_CLOSING_TAG));
-            };
-            let tag_name = tag_name.trim_matches(WHITESPACE);
-            Some(Ok(Event::Close(tag_name)))
-        } else if self.consume("<") {
-            let Some(i) = self.doc.find(WHITESPACE_AND_RANGLE_AND_SLASH) else {
-                self.doc = "";
-                return Some(Err(Error::UNTERMINATED_TAG));
-            };
-            let tag = self.doc[..i].trim_matches(WHITESPACE);
-            if tag == "" {
-                self.doc = "";
-                return Some(Err(Error::INVALID_TAG_NAME));
-            }
-            self.doc = &self.doc[i..];
-            let Some(attrs) = self.consume_to(">") else {
-                self.doc = "";
-                return Some(Err(Error::UNTERMINATED_TAG));
-            };
-            let mut attrs = attrs.trim_matches(WHITESPACE);
-            if attrs.ends_with('/') {
-                self.self_closing = Some(tag);
-                attrs = attrs[..attrs.len() - 1].trim_end_matches(WHITESPACE);
-            }
-            Some(Ok(Event::Open(tag, Attrs { text: attrs })))
-        } else if self.doc.starts_with("&") {
-            if let Some(i) = self.doc.find([';']) {
-                let ret = &self.doc[..=i];
-                self.doc = &self.doc[i + 1..];
-                Some(Ok(Event::Text(Text::Escaped(ret))))
-            } else {
-                let i = self.doc.find(['<']).unwrap_or_else(|| self.doc.len());
-                let ret = &self.doc[..i];
-                self.doc = &self.doc[i..];
-                Some(Ok(Event::Text(Text::Escaped(ret))))
-            }
-        } else if !self.doc.is_empty() {
-            let i = self.doc.find(['<', '&']).unwrap_or_else(|| self.doc.len());
-            let ret = &self.doc[..i];
-            self.doc = &self.doc[i..];
-            Some(Ok(Event::Text(Text::Verbatim(ret))))
-        } else {
-            None
         }
     }
 }

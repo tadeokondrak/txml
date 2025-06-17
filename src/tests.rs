@@ -5,7 +5,7 @@ use alloc::{string::String, vec::Vec};
 macro_rules! extract {
     ($ev:expr, $pat:pat) => {
         let $pat = $ev else {
-            panic!("unexpected event type")
+            panic!("unexpected event type {:?}", $ev)
         };
     };
 }
@@ -14,7 +14,12 @@ macro_rules! extract {
 fn only_event(s: &str) -> Result<Event<'_>, Error> {
     let mut p = Parser::new(s);
     let ev = p.next().unwrap();
-    assert_eq!(p.next(), None, "extra event found");
+    assert_eq!(
+        p.next(),
+        None,
+        "extra event found, all events: {:?}",
+        Parser::new(s).collect::<Vec<_>>()
+    );
     ev
 }
 
@@ -39,7 +44,7 @@ fn all_events(text: &str) -> Result<Vec<Event<'_>>, Error> {
 fn no_equals_character_in_attribute() {
     const DOC: &'static str = "<element attr>";
     extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
-    assert_eq!(attrs.next(), Some(Err(Error::ATTR_MISSING_EQ)));
+    assert_eq!(attrs.next(), Some(Err(Error::ATTR_INVALID_NAME)));
     assert_eq!(attrs.next(), None);
 }
 
@@ -147,11 +152,11 @@ fn system_doctype() {
         all_events(DOC).unwrap(),
         [
             Event::Pi("xml version=\"1.0\""),
-            Event::Text(Text::Escaped("\n")),
+            Event::Text(Text::Verbatim("\n")),
             Event::Doctype("greeting SYSTEM \"hello.dtd\"", ""),
-            Event::Text(Text::Escaped("\n")),
+            Event::Text(Text::Verbatim("\n")),
             Event::Open("greeting", Attrs { text: "" }),
-            Event::Text(Text::Escaped("Hello, world!")),
+            Event::Text(Text::Verbatim("Hello, world!")),
             Event::Close("greeting")
         ]
     );
@@ -168,11 +173,11 @@ fn local_doctype() {
         all_events(DOC).unwrap(),
         [
             Event::Pi(r#"xml version="1.0" encoding="UTF-8""#),
-            Event::Text(Text::Escaped("\n")),
+            Event::Text(Text::Verbatim("\n")),
             Event::Doctype("greeting", "<!ELEMENT greeting (#PCDATA)>"),
-            Event::Text(Text::Escaped("\n")),
+            Event::Text(Text::Verbatim("\n")),
             Event::Open("greeting", Attrs { text: "" }),
-            Event::Text(Text::Escaped("Hello, world!")),
+            Event::Text(Text::Verbatim("Hello, world!")),
             Event::Close("greeting"),
         ]
     );
@@ -202,13 +207,33 @@ fn empty_cdata() {
 #[test]
 fn unterminated_attribute_quote() {
     const DOC: &'static str = r#"<element attr="unterminated>"#;
-    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
-    assert_eq!(attrs.next(), Some(Err(Error::ATTR_MISSING_END_QUOTE)));
+    extract!(only_event(DOC), Err(Error::ATTR_MISSING_END_QUOTE));
 }
 
 #[test]
 fn self_closing() {
     const DOC: &'static str = "<element attr='value' />";
+    let events = all_events(DOC).unwrap();
+    assert_eq!(
+        events.clone(),
+        [
+            Event::Open(
+                "element",
+                Attrs {
+                    text: "attr='value'"
+                }
+            ),
+            Event::Close("element")
+        ]
+    );
+    extract!(events[0].clone(), Event::Open(_, mut attrs));
+    assert_eq!(attrs.next(), Some(Ok(("attr", Text::Escaped("value")))));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn self_closing_no_space() {
+    const DOC: &'static str = "<element attr='value'/>";
     let events = all_events(DOC).unwrap();
     assert_eq!(
         events.clone(),
@@ -239,7 +264,6 @@ fn empty_entity() {
 }
 
 #[test]
-#[ignore = "failing"]
 fn lbracket_in_entity() {
     const DOC: &'static str = r#"<!DOCTYPE doc [
 <!ELEMENT doc (#PCDATA)>
@@ -256,4 +280,95 @@ fn lbracket_in_entity() {
             Event::Close("doc")
         ]
     );
+}
+
+#[test]
+fn attribute_with_langle() {
+    const DOC: &'static str = r#"<element attr="test>test">"#;
+    assert_eq!(
+        only_event(DOC).unwrap(),
+        Event::Open(
+            "element",
+            Attrs {
+                text: "attr=\"test>test\""
+            }
+        )
+    );
+    extract!(only_event(DOC).unwrap(), Event::Open(_, mut attrs));
+    assert_eq!(attrs.next(), Some(Ok(("attr", Text::Escaped("test>test")))));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn doctype_with_langle() {
+    const DOC: &'static str = r#"<!DOCTYPE root SYSTEM "file>name.dtd">"#;
+    assert_eq!(
+        only_event(DOC).unwrap(),
+        Event::Doctype("root SYSTEM \"file>name.dtd\"", "")
+    );
+}
+
+#[test]
+fn simple_self_closing_no_space() {
+    const DOC: &'static str = r#"<x/>"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [Event::Open("x", Attrs { text: "" }), Event::Close("x")]
+    );
+}
+
+#[test]
+fn double_self_closing() {
+    const DOC: &'static str = r#"<x/ x="" />"#;
+    let result = only_event(DOC);
+    assert_eq!(result, Err(Error::INVALID_TAG_NAME));
+}
+
+#[test]
+fn invalid_self_closing_with_attributes() {
+    const DOC: &'static str = r#"<x/ x="">"#;
+    let result = only_event(DOC);
+    assert_eq!(result, Err(Error::INVALID_TAG_NAME));
+}
+
+#[test]
+fn valid_self_closing_with_attributes() {
+    const DOC: &'static str = r#"<x x=""/>"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [
+            Event::Open("x", Attrs { text: "x=\"\"" }),
+            Event::Close("x")
+        ]
+    );
+}
+
+#[test]
+fn valid_self_closing_with_attributes_and_space() {
+    const DOC: &'static str = r#"<x x="" />"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [
+            Event::Open("x", Attrs { text: "x=\"\"" }),
+            Event::Close("x")
+        ]
+    );
+}
+
+#[test]
+fn self_closing_with_extra_text() {
+    const DOC: &'static str = r#"<x x="" /x>"#;
+    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
+    assert_eq!(attrs.next(), Some(Ok(("x", Text::Escaped("")))));
+    assert_eq!(attrs.next(), Some(Err(Error::ATTR_INVALID_NAME)));
+    assert_eq!(attrs.next(), None);
+}
+
+
+#[test]
+fn attr_invalid_name() {
+    const DOC: &'static str = r#"<test ="">"#;
+    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
+    assert_eq!(attrs.next(), Some(Err(Error::ATTR_INVALID_NAME)));
+    assert_eq!(attrs.next(), None);
 }
