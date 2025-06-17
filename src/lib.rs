@@ -96,48 +96,63 @@ pub struct Attrs<'a> {
 
 /// A parsing error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Error(pub &'static str);
+pub enum Error {
+    /// invalid attribute name
+    AttrInvalidName,
+    /// '=' character not found in attribute
+    AttrMissingEq,
+    /// quote character not found in attribute
+    AttrMissingQuote,
+    /// end quote character not found in attribute
+    AttrMissingEndQuote,
+    /// invalid quote character in attribute
+    AttrInvalidQuote,
+    /// unterminated entity (missing ';')
+    UnterminatedEntity,
+    /// invalid named entity
+    InvalidNamedEntity,
+    /// invalid numeric entity
+    InvalidNumericEntity,
+    /// unterminated comment (missing '-->')
+    UnterminatedComment,
+    /// unterminated PI (missing '?>')
+    UnterminatedPi,
+    /// unterminated CDATA section (missing ']]>')
+    UnterminatedCdata,
+    /// unterminated doctype declaration (missing '>')
+    UnterminatedDoctype,
+    /// unterminated doctype subset (missing ']')
+    UnterminatedDoctypeSubset,
+    /// unterminated tag (missing '>')
+    UnterminatedTag,
+    /// unterminated closing tag (missing '>')
+    UnterminatedClosingTag,
+    /// invalid tag name
+    InvalidTagName,
+}
 
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.0)
+        let msg = match self {
+            Error::AttrInvalidName => "invalid attribute name",
+            Error::AttrMissingEq => "'=' character not found in attribute",
+            Error::AttrMissingQuote => "quote character not found in attribute",
+            Error::AttrMissingEndQuote => "end quote character not found in attribute",
+            Error::AttrInvalidQuote => "invalid quote character in attribute",
+            Error::UnterminatedEntity => "unterminated entity (missing ';')",
+            Error::InvalidNamedEntity => "invalid named entity",
+            Error::InvalidNumericEntity => "invalid numeric entity",
+            Error::UnterminatedComment => "unterminated comment (missing '-->')",
+            Error::UnterminatedPi => "unterminated PI (missing '?>')",
+            Error::UnterminatedCdata => "unterminated CDATA section (missing ']]>')",
+            Error::UnterminatedDoctype => "unterminated doctype declaration (missing '>')",
+            Error::UnterminatedDoctypeSubset => "unterminated doctype subset (missing ']')",
+            Error::UnterminatedTag => "unterminated tag (missing '>')",
+            Error::UnterminatedClosingTag => "unterminated closing tag (missing '>')",
+            Error::InvalidTagName => "invalid tag name",
+        };
+        f.write_str(msg)
     }
-}
-
-impl Error {
-    /// invalid attribute ame
-    pub const ATTR_INVALID_NAME: Error = Error("invalid attribute name");
-    /// '=' character not found in attribute
-    pub const ATTR_MISSING_EQ: Error = Error("'=' character not found in attribute");
-    /// quote character not found in attribute
-    pub const ATTR_MISSING_QUOTE: Error = Error("quote character not found in attribute");
-    /// end quote character not found in attribute
-    pub const ATTR_MISSING_END_QUOTE: Error = Error("end quote character not found in attribute");
-    /// invalid quote character in attribute
-    pub const ATTR_INVALID_QUOTE: Error = Error("invalid quote character in attribute");
-    /// unterminated entity (missing ';')
-    pub const UNTERMINATED_ENTITY: Error = Error("unterminated entity (missing ';')");
-    /// invalid named entity
-    pub const INVALID_NAMED_ENTITY: Error = Error("invalid named entity");
-    /// invalid numeric entity
-    pub const INVALID_NUMERIC_ENTITY: Error = Error("invalid numeric entity");
-    /// unterminated comment (missing '-->')
-    pub const UNTERMINATED_COMMENT: Error = Error("unterminated comment (missing '-->')");
-    /// unterminated PI (missing '?>')
-    pub const UNTERMINATED_PI: Error = Error("unterminated PI (missing '?>')");
-    /// unterminated CDATA section (missing ']]>')
-    pub const UNTERMINATED_CDATA: Error = Error("unterminated CDATA section (missing ']]>')");
-    /// unterminated doctype declaration (missing '>')
-    pub const UNTERMINATED_DOCTYPE: Error = Error("unterminated doctype declaration (missing '>')");
-    /// unterminated doctype subset (missing ']')
-    pub const UNTERMINATED_DOCTYPE_SUBSET: Error =
-        Error("unterminated doctype subset (missing ']')");
-    /// unterminated tag (missing '>')
-    pub const UNTERMINATED_TAG: Error = Error("unterminated tag (missing '>')");
-    /// unterminated closing tag (missing '>')
-    pub const UNTERMINATED_CLOSING_TAG: Error = Error("unterminated closing tag (missing '>')");
-    /// invalid tag name
-    pub const INVALID_TAG_NAME: Error = Error("invalid tag name");
 }
 
 impl<'a> Attrs<'a> {
@@ -164,7 +179,7 @@ impl<'a> Iterator for Attrs<'a> {
         }
         let Some(eq) = self.text.find('=') else {
             self.text = "";
-            return Some(Err(Error::ATTR_INVALID_NAME));
+            return Some(Err(Error::AttrInvalidName));
         };
         let (start, rest) = self.text.split_at(eq);
         let start = start.trim_matches(WHITESPACE);
@@ -172,11 +187,11 @@ impl<'a> Iterator for Attrs<'a> {
         let mut it = rest.char_indices();
         let Some((_, quote)) = it.next() else {
             self.text = "";
-            return Some(Err(Error::ATTR_MISSING_QUOTE));
+            return Some(Err(Error::AttrMissingQuote));
         };
         if quote != '\'' && quote != '"' {
             self.text = "";
-            return Some(Err(Error::ATTR_INVALID_QUOTE));
+            return Some(Err(Error::AttrInvalidQuote));
         }
         let val_end = loop {
             match it.next() {
@@ -184,13 +199,13 @@ impl<'a> Iterator for Attrs<'a> {
                 Some((_, _)) => {}
                 None => {
                     self.text = "";
-                    return Some(Err(Error::ATTR_MISSING_END_QUOTE));
+                    return Some(Err(Error::AttrMissingEndQuote));
                 }
             }
         };
         self.text = it.as_str();
         if start == "" {
-            return Some(Err(Error::ATTR_INVALID_NAME));
+            return Some(Err(Error::AttrInvalidName));
         }
         Some(Ok((start, Text::Escaped(&rest[1..val_end]))))
     }
@@ -221,7 +236,7 @@ impl<'a> Iterator for Text<'a> {
             Text::Escaped(ref mut s) if s.starts_with('&') => {
                 let Some(semi) = s.find(';') else {
                     *s = "";
-                    return Some(Err(Error::UNTERMINATED_ENTITY));
+                    return Some(Err(Error::UnterminatedEntity));
                 };
                 let esc = &s[1..semi];
                 *s = &s[semi + 1..];
@@ -243,13 +258,13 @@ impl<'a> Iterator for Text<'a> {
                             Some(c) => Some(Ok(c)),
                             None => {
                                 *s = "";
-                                return Some(Err(Error::INVALID_NUMERIC_ENTITY));
+                                return Some(Err(Error::InvalidNumericEntity));
                             }
                         }
                     }
                     _ => {
                         *s = "";
-                        return Some(Err(Error::INVALID_NAMED_ENTITY));
+                        return Some(Err(Error::InvalidNamedEntity));
                     }
                 }
             }
@@ -333,7 +348,7 @@ impl<'a> Parser<'a> {
                             break;
                         }
                     } else {
-                        return Err(Error::ATTR_MISSING_END_QUOTE);
+                        return Err(Error::AttrMissingEndQuote);
                     }
                 }
             }
@@ -345,50 +360,50 @@ impl<'a> Parser<'a> {
         let ev = if let Some(tag) = self.self_closing.take() {
             Event::Close(tag)
         } else if self.consume("<?") {
-            Event::Pi(self.consume_to("?>").ok_or(Error::UNTERMINATED_PI)?)
+            Event::Pi(self.consume_to("?>").ok_or(Error::UnterminatedPi)?)
         } else if self.consume("<!DOCTYPE") {
             let (c, name) = self
                 .consume_to_char_ignoring_quoted_sections(&['[', '>'])?
-                .ok_or(Error::UNTERMINATED_DOCTYPE)?;
+                .ok_or(Error::UnterminatedDoctype)?;
             if c == '[' {
                 let (_, body) = self
                     .consume_to_char_ignoring_quoted_sections(&[']'])?
-                    .ok_or(Error::UNTERMINATED_DOCTYPE_SUBSET)?;
+                    .ok_or(Error::UnterminatedDoctypeSubset)?;
                 let body = body.trim_matches(WHITESPACE);
-                let _ws = self.consume_to(">").ok_or(Error::UNTERMINATED_DOCTYPE)?;
+                let _ws = self.consume_to(">").ok_or(Error::UnterminatedDoctype)?;
                 Event::Doctype(name.trim_matches(WHITESPACE), body)
             } else {
                 Event::Doctype(name.trim_matches(WHITESPACE), "")
             }
         } else if self.consume("<!--") {
-            Event::Comment(self.consume_to("-->").ok_or(Error::UNTERMINATED_COMMENT)?)
+            Event::Comment(self.consume_to("-->").ok_or(Error::UnterminatedComment)?)
         } else if self.consume("<![CDATA[") {
             Event::Text(Text::Verbatim(
-                self.consume_to("]]>").ok_or(Error::UNTERMINATED_CDATA)?,
+                self.consume_to("]]>").ok_or(Error::UnterminatedCdata)?,
             ))
         } else if self.consume("</") {
             let tag = self
                 .consume_to(">")
-                .ok_or(Error::UNTERMINATED_CLOSING_TAG)?
+                .ok_or(Error::UnterminatedClosingTag)?
                 .trim_matches(WHITESPACE);
             if tag == "" {
-                return Err(Error::INVALID_TAG_NAME);
+                return Err(Error::InvalidTagName);
             }
             Event::Close(tag)
         } else if self.consume("<") {
             let (_, content) = self
                 .consume_to_char_ignoring_quoted_sections(&['>'])?
-                .ok_or(Error::UNTERMINATED_TAG)?;
+                .ok_or(Error::UnterminatedTag)?;
             let (mut tag, rest) = content.split_once(WHITESPACE).unwrap_or((content, ""));
             if tag == "" {
-                return Err(Error::INVALID_TAG_NAME);
+                return Err(Error::InvalidTagName);
             }
             let mut attrs = rest.trim_matches(WHITESPACE);
             if tag.ends_with('/') {
                 tag = tag[..tag.len() - 1].trim_end_matches(WHITESPACE);
                 self.self_closing = Some(tag);
                 if attrs != "" {
-                    return Err(Error::INVALID_TAG_NAME);
+                    return Err(Error::InvalidTagName);
                 }
             } else if attrs.ends_with('/') {
                 self.self_closing = Some(tag);
