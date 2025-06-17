@@ -226,3 +226,34 @@ fn self_closing() {
     assert_eq!(attrs.next(), Some(Ok(("attr", Text::Escaped("value")))));
     assert_eq!(attrs.next(), None);
 }
+
+#[test]
+fn empty_entity() {
+    const DOC: &'static str = "&;";
+    extract!(only_event(DOC), Ok(Event::Text(text)));
+    assert_eq!(text, Text::Escaped(DOC));
+    assert_eq!(
+        text.collect::<Result<String, Error>>(),
+        Err(Error::INVALID_NAMED_ENTITY)
+    );
+}
+
+#[test]
+#[ignore = "failing"]
+fn lbracket_in_entity() {
+    const DOC: &'static str = r#"<!DOCTYPE doc [
+<!ELEMENT doc (#PCDATA)>
+<!ENTITY e "]">
+]>
+<doc>&e;</doc>"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [
+            Event::Doctype("doc", "<!ELEMENT doc (#PCDATA)>\n<!ENTITY e \"]\">"),
+            Event::Text(Text::Verbatim("\n")),
+            Event::Open("doc", Attrs { text: "" }),
+            Event::Text(Text::Escaped("&e;")),
+            Event::Close("doc")
+        ]
+    );
+}

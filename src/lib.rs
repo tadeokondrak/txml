@@ -6,12 +6,27 @@
 //! - Doesn't support custom entities
 //! - Requires the full document to be loaded in memory
 //! - Accepts some non-well-formed documents
+//! - Fails to parse some rare well-formed documents
+//! - Supports XML built-in entities like &amp;
 //! - Doesn't have any dependencies
 //! - Doesn't allocate
 //!
 //! This parser is not meant for usecases where you'd like good error messages
 //! or perfect XML compliance. It's best used when communicating with a known
 //! system, or when parsing existing, known documents written by hand.
+//!
+//! An example of a well-formed XML document that won't parse with txml:
+//!
+//! ```xml
+//! <!DOCTYPE root [<!ENTITY e "]">]>
+//! <root>&e;</root>
+//! ```
+//!
+//! An example of a non-well-formed XML document that will parse with txml:
+//!
+//! ```xml
+//! <0root>&e;</0root>
+//! ```
 
 #![no_std]
 #![forbid(unsafe_code)]

@@ -1,9 +1,8 @@
 # txml
 
 An XML parser. It's small, but it:
-
-- Doesn't parse DTDs and therefore doesn't support custom entities
-- Doesn't validate DTDs
+- Doesn't parse or validate DTDs
+- Doesn't support custom entities
 - Requires the full document to be loaded in memory
 - Accepts some non-well-formed documents
 - Doesn't have any dependencies
