@@ -1,6 +1,6 @@
 [package]
 name = "txml"
-version = "0.2.0" # remember to update html_root_url
+version = "0.3.0" # remember to update html_root_url
 authors = ["Tadeo Kondrak <me@tadeo.ca>"]
 edition = "2018"
 description = "Small and limited no_std XML parser"

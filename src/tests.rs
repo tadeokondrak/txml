@@ -1,0 +1,374 @@
+extern crate alloc;
+use crate::{Attrs, Error, Event, Parser, Text};
+use alloc::{string::String, vec::Vec};
+
+macro_rules! extract {
+    ($ev:expr, $pat:pat) => {
+        let $pat = $ev else {
+            panic!("unexpected event type {:?}", $ev)
+        };
+    };
+}
+
+#[track_caller]
+fn only_event(s: &str) -> Result<Event<'_>, Error> {
+    let mut p = Parser::new(s);
+    let ev = p.next().unwrap();
+    assert_eq!(
+        p.next(),
+        None,
+        "extra event found, all events: {:?}",
+        Parser::new(s).collect::<Vec<_>>()
+    );
+    ev
+}
+
+#[track_caller]
+fn only_text(s: &str) -> Result<String, Error> {
+    let mut res = String::new();
+    for ev in Parser::new(s) {
+        extract!(ev, Ok(Event::Text(text)));
+        for c in text {
+            let c = c?;
+            res.push(c);
+        }
+    }
+    Ok(res)
+}
+
+fn all_events(text: &str) -> Result<Vec<Event<'_>>, Error> {
+    Parser::new(text).collect::<Result<Vec<_>, _>>()
+}
+
+#[test]
+fn no_equals_character_in_attribute() {
+    const DOC: &'static str = "<element attr>";
+    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
+    assert_eq!(attrs.next(), Some(Err(Error::AttrInvalidName)));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn no_quote_character_in_attribute() {
+    const DOC: &'static str = "<element attr=>";
+    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
+    assert_eq!(attrs.next(), Some(Err(Error::AttrMissingQuote)));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn invalid_quote_character_in_attribute() {
+    const DOC: &'static str = "<element attr=unquoted>";
+    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
+    assert_eq!(attrs.next(), Some(Err(Error::AttrInvalidQuote)));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn extra_whitespace_in_tag_after_attribute() {
+    const DOC: &'static str = "<element attr='test' >";
+    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
+    assert_eq!(attrs.next(), Some(Ok(("attr", Text::Escaped("test")))));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn extra_whitespace_in_tag_between_attributes() {
+    const DOC: &'static str = "<element attr='test'  attr='test'>";
+    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
+    assert_eq!(attrs.next(), Some(Ok(("attr", Text::Escaped("test")))));
+    assert_eq!(attrs.next(), Some(Ok(("attr", Text::Escaped("test")))));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn named_entities() {
+    const DOC: &'static str = "&lt;&gt;&amp;&apos;&quot;";
+    assert_eq!(only_text(DOC), Ok("<>&'\"".into()));
+}
+
+#[test]
+fn numeric_entities() {
+    const DOC: &'static str = "&#60;&#x3E;";
+    let events = all_events(DOC).unwrap();
+    extract!(events[0].clone(), Event::Text(text_0));
+    extract!(events[1].clone(), Event::Text(text_1));
+    assert_eq!(events.len(), 2);
+    assert_eq!(text_0, Text::Escaped("&#60;"));
+    assert_eq!(text_0.collect::<Result<String, Error>>(), Ok("<".into()));
+    assert_eq!(text_1, Text::Escaped("&#x3E;"));
+    assert_eq!(text_1.collect::<Result<String, Error>>(), Ok(">".into()));
+}
+
+#[test]
+fn unterminated_named_entity() {
+    const DOC: &'static str = "&lt";
+    extract!(only_event(DOC), Ok(Event::Text(text)));
+    assert_eq!(text, Text::Escaped(DOC));
+    assert_eq!(
+        text.collect::<Result<String, Error>>(),
+        Err(Error::UnterminatedEntity)
+    );
+}
+
+#[test]
+fn invalid_decimal_numeric_entity() {
+    const DOC: &'static str = "&#1000000000;";
+    extract!(only_event(DOC), Ok(Event::Text(text)));
+    assert_eq!(text, Text::Escaped(DOC));
+    assert_eq!(
+        text.collect::<Result<String, Error>>(),
+        Err(Error::InvalidNumericEntity)
+    );
+}
+
+#[test]
+fn invalid_hex_numeric_entity_size() {
+    const DOC: &'static str = "&#x1000000000;";
+    extract!(only_event(DOC), Ok(Event::Text(text)));
+    assert_eq!(text, Text::Escaped(DOC));
+    assert_eq!(
+        text.collect::<Result<String, Error>>(),
+        Err(Error::InvalidNumericEntity)
+    );
+}
+
+#[test]
+fn invalid_hex_numeric_entity_chars() {
+    const DOC: &'static str = "&#xGHIJ;";
+    extract!(only_event(DOC), Ok(Event::Text(text)));
+    assert_eq!(
+        text.collect::<Result<String, Error>>(),
+        Err(Error::InvalidNumericEntity)
+    );
+}
+
+#[test]
+fn system_doctype() {
+    const DOC: &'static str = r#"<?xml version="1.0"?>
+<!DOCTYPE greeting SYSTEM "hello.dtd">
+<greeting>Hello, world!</greeting>"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [
+            Event::Pi("xml version=\"1.0\""),
+            Event::Text(Text::Verbatim("\n")),
+            Event::Doctype("greeting SYSTEM \"hello.dtd\"", ""),
+            Event::Text(Text::Verbatim("\n")),
+            Event::Open("greeting", Attrs { text: "" }),
+            Event::Text(Text::Verbatim("Hello, world!")),
+            Event::Close("greeting")
+        ]
+    );
+}
+
+#[test]
+fn local_doctype() {
+    const DOC: &'static str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE greeting [
+ <!ELEMENT greeting (#PCDATA)>
+]>
+<greeting>Hello, world!</greeting>"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [
+            Event::Pi(r#"xml version="1.0" encoding="UTF-8""#),
+            Event::Text(Text::Verbatim("\n")),
+            Event::Doctype("greeting", "<!ELEMENT greeting (#PCDATA)>"),
+            Event::Text(Text::Verbatim("\n")),
+            Event::Open("greeting", Attrs { text: "" }),
+            Event::Text(Text::Verbatim("Hello, world!")),
+            Event::Close("greeting"),
+        ]
+    );
+}
+
+#[test]
+fn unterminated_cdata() {
+    const DOC: &'static str = "<![CDATA[unclosed";
+    let result = only_event(DOC);
+    assert_eq!(result, Err(Error::UnterminatedCdata));
+}
+
+#[test]
+fn valid_cdata() {
+    const DOC: &'static str = "<![CDATA[content]]>";
+    extract!(only_event(DOC), Ok(Event::Text(text)));
+    assert_eq!(text, Text::Verbatim("content"));
+}
+
+#[test]
+fn empty_cdata() {
+    const DOC: &'static str = "<![CDATA[]]>";
+    extract!(only_event(DOC), Ok(Event::Text(text)));
+    assert_eq!(text, Text::Verbatim(""));
+}
+
+#[test]
+fn unterminated_attribute_quote() {
+    const DOC: &'static str = r#"<element attr="unterminated>"#;
+    extract!(only_event(DOC), Err(Error::AttrMissingEndQuote));
+}
+
+#[test]
+fn self_closing() {
+    const DOC: &'static str = "<element attr='value' />";
+    let events = all_events(DOC).unwrap();
+    assert_eq!(
+        events.clone(),
+        [
+            Event::Open(
+                "element",
+                Attrs {
+                    text: "attr='value'"
+                }
+            ),
+            Event::Close("element")
+        ]
+    );
+    extract!(events[0].clone(), Event::Open(_, mut attrs));
+    assert_eq!(attrs.next(), Some(Ok(("attr", Text::Escaped("value")))));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn self_closing_no_space() {
+    const DOC: &'static str = "<element attr='value'/>";
+    let events = all_events(DOC).unwrap();
+    assert_eq!(
+        events.clone(),
+        [
+            Event::Open(
+                "element",
+                Attrs {
+                    text: "attr='value'"
+                }
+            ),
+            Event::Close("element")
+        ]
+    );
+    extract!(events[0].clone(), Event::Open(_, mut attrs));
+    assert_eq!(attrs.next(), Some(Ok(("attr", Text::Escaped("value")))));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn empty_entity() {
+    const DOC: &'static str = "&;";
+    extract!(only_event(DOC), Ok(Event::Text(text)));
+    assert_eq!(text, Text::Escaped(DOC));
+    assert_eq!(
+        text.collect::<Result<String, Error>>(),
+        Err(Error::InvalidNamedEntity)
+    );
+}
+
+#[test]
+fn lbracket_in_entity() {
+    const DOC: &'static str = r#"<!DOCTYPE doc [
+<!ELEMENT doc (#PCDATA)>
+<!ENTITY e "]">
+]>
+<doc>&e;</doc>"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [
+            Event::Doctype("doc", "<!ELEMENT doc (#PCDATA)>\n<!ENTITY e \"]\">"),
+            Event::Text(Text::Verbatim("\n")),
+            Event::Open("doc", Attrs { text: "" }),
+            Event::Text(Text::Escaped("&e;")),
+            Event::Close("doc")
+        ]
+    );
+}
+
+#[test]
+fn attribute_with_langle() {
+    const DOC: &'static str = r#"<element attr="test>test">"#;
+    assert_eq!(
+        only_event(DOC).unwrap(),
+        Event::Open(
+            "element",
+            Attrs {
+                text: "attr=\"test>test\""
+            }
+        )
+    );
+    extract!(only_event(DOC).unwrap(), Event::Open(_, mut attrs));
+    assert_eq!(attrs.next(), Some(Ok(("attr", Text::Escaped("test>test")))));
+    assert_eq!(attrs.next(), None);
+}
+
+#[test]
+fn doctype_with_langle() {
+    const DOC: &'static str = r#"<!DOCTYPE root SYSTEM "file>name.dtd">"#;
+    assert_eq!(
+        only_event(DOC).unwrap(),
+        Event::Doctype("root SYSTEM \"file>name.dtd\"", "")
+    );
+}
+
+#[test]
+fn simple_self_closing_no_space() {
+    const DOC: &'static str = r#"<x/>"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [Event::Open("x", Attrs { text: "" }), Event::Close("x")]
+    );
+}
+
+#[test]
+fn double_self_closing() {
+    const DOC: &'static str = r#"<x/ x="" />"#;
+    let result = only_event(DOC);
+    assert_eq!(result, Err(Error::InvalidTagName));
+}
+
+#[test]
+fn invalid_self_closing_with_attributes() {
+    const DOC: &'static str = r#"<x/ x="">"#;
+    let result = only_event(DOC);
+    assert_eq!(result, Err(Error::InvalidTagName));
+}
+
+#[test]
+fn valid_self_closing_with_attributes() {
+    const DOC: &'static str = r#"<x x=""/>"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [
+            Event::Open("x", Attrs { text: "x=\"\"" }),
+            Event::Close("x")
+        ]
+    );
+}
+
+#[test]
+fn valid_self_closing_with_attributes_and_space() {
+    const DOC: &'static str = r#"<x x="" />"#;
+    assert_eq!(
+        all_events(DOC).unwrap(),
+        [
+            Event::Open("x", Attrs { text: "x=\"\"" }),
+            Event::Close("x")
+        ]
+    );
+}
+
+#[test]
+fn self_closing_with_extra_text() {
+    const DOC: &'static str = r#"<x x="" /x>"#;
+    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
+    assert_eq!(attrs.next(), Some(Ok(("x", Text::Escaped("")))));
+    assert_eq!(attrs.next(), Some(Err(Error::AttrInvalidName)));
+    assert_eq!(attrs.next(), None);
+}
+
+
+#[test]
+fn attr_invalid_name() {
+    const DOC: &'static str = r#"<test ="">"#;
+    extract!(only_event(DOC), Ok(Event::Open(_, mut attrs)));
+    assert_eq!(attrs.next(), Some(Err(Error::AttrInvalidName)));
+    assert_eq!(attrs.next(), None);
+}

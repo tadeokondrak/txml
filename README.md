@@ -1,34 +1,17 @@
 # txml
 
-An XML parser. It's about ~200 SLOC but it:
-
-- Doesn't parse DTDs and therefore doesn't support custom entities
-- Doesn't validate DTDs, of course
-- Doesn't allow for streaming - you have to read the whole file at once
-- Doesn't reject all non-well-formed documents
+An XML parser. It's small, but it:
+- Doesn't parse or validate DTDs
+- Doesn't support custom entities
+- Requires the full document to be loaded in memory
+- Accepts some non-well-formed documents
 - Doesn't have any dependencies
-- Doesn't allocate, which is nice
+- Doesn't allocate
 
-This parser is not meant for any usecase where you're not certain that
-the document is well-formed, because it reports errors by simply ending
-the event stream early.
-
-This parser may be useful for parsing machine-readable specifications that
-use XML such as Wayland and Vulkan.
+This parser is not meant for usecases where you'd like good error messages
+or perfect XML compliance. It's best used when communicating with a known
+system, or when parsing existing, known documents written by hand.
 
 ## License
 
-Licensed under either of
-
- * Apache License, Version 2.0
-   ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license
-   ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
-
-## Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
+Licensed under either Apache-2.0 or MIT, at your option.
