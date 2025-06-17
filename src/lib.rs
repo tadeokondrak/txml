@@ -209,7 +209,7 @@ impl<'a> Iterator for Attrs<'a> {
 pub enum Text<'a> {
     /// Text interpreted as-is, without any replacements.
     Verbatim(&'a str),
-    /// Text interpreted with XML entity references.
+    /// Text possibly interpreted with XML entity references.
     Escaped(&'a str),
 }
 
@@ -218,53 +218,46 @@ impl<'a> Iterator for Text<'a> {
 
     fn next(&mut self) -> Option<Result<char, Error>> {
         match *self {
-            Text::Verbatim(ref mut s) => {
+            Text::Escaped(ref mut s) if s.starts_with('&') => {
+                let Some(semi) = s.find(';') else {
+                    *s = "";
+                    return Some(Err(Error::UNTERMINATED_ENTITY));
+                };
+                let esc = &s[1..semi];
+                *s = &s[semi + 1..];
+                match esc {
+                    "lt" => Some(Ok('<')),
+                    "gt" => Some(Ok('>')),
+                    "amp" => Some(Ok('&')),
+                    "apos" => Some(Ok('\'')),
+                    "quot" => Some(Ok('"')),
+                    esc if esc.starts_with('#') => {
+                        let (esc, radix) = match esc[1..].strip_prefix('x') {
+                            Some(esc) => (esc, 16),
+                            None => (&esc[1..], 10),
+                        };
+                        match u32::from_str_radix(esc, radix)
+                            .ok()
+                            .and_then(|n| n.try_into().ok())
+                        {
+                            Some(c) => Some(Ok(c)),
+                            None => {
+                                *s = "";
+                                return Some(Err(Error::INVALID_NUMERIC_ENTITY));
+                            }
+                        }
+                    }
+                    _ => {
+                        *s = "";
+                        return Some(Err(Error::INVALID_NAMED_ENTITY));
+                    }
+                }
+            }
+            Text::Verbatim(ref mut s) | Text::Escaped(ref mut s) => {
                 let mut it = s.chars();
                 let c = it.next()?;
                 *s = it.as_str();
                 Some(Ok(c))
-            }
-            Text::Escaped(ref mut s) => {
-                if s.starts_with('&') {
-                    let Some(semi) = s.find(';') else {
-                        *s = "";
-                        return Some(Err(Error::UNTERMINATED_ENTITY));
-                    };
-                    let esc = &s[1..semi];
-                    *s = &s[semi + 1..];
-                    match esc {
-                        "lt" => Some(Ok('<')),
-                        "gt" => Some(Ok('>')),
-                        "amp" => Some(Ok('&')),
-                        "apos" => Some(Ok('\'')),
-                        "quot" => Some(Ok('"')),
-                        esc if esc.starts_with('#') => {
-                            let (esc, radix) = match esc[1..].strip_prefix('x') {
-                                Some(esc) => (esc, 16),
-                                None => (&esc[1..], 10),
-                            };
-                            match u32::from_str_radix(esc, radix)
-                                .ok()
-                                .and_then(|n| n.try_into().ok())
-                            {
-                                Some(c) => Some(Ok(c)),
-                                None => {
-                                    *s = "";
-                                    return Some(Err(Error::INVALID_NUMERIC_ENTITY));
-                                }
-                            }
-                        }
-                        _ => {
-                            *s = "";
-                            return Some(Err(Error::INVALID_NAMED_ENTITY));
-                        }
-                    }
-                } else {
-                    let mut it = s.chars();
-                    let c = it.next()?;
-                    *s = it.as_str();
-                    Some(Ok(c))
-                }
             }
         }
     }
